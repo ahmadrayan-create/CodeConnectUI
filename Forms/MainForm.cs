@@ -1,9 +1,11 @@
 using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.IO;
 using System.Text;
 using System.Windows.Forms;
 using CodeConnect.Logic;
+using CodeConnect.Helpers; // GraphicsPathExtensions
 
 namespace CodeConnect.Forms
 {
@@ -13,7 +15,7 @@ namespace CodeConnect.Forms
         public DoubleBufferedPanel() { this.DoubleBuffered = true; }
     }
 
-    // Neon Glass Button with hover glow
+    // Neon Glass Button with hover glow (unchanged)
     public class GlassButton : Button
     {
         private float _hoverAlpha = 0f;
@@ -51,13 +53,13 @@ namespace CodeConnect.Forms
             g.Clear(Parent?.BackColor ?? Color.Transparent);
 
             RectangleF rect = new RectangleF(0, 0, this.Width - 1, this.Height - 1);
-            float radius = 12;
+            float radius = 10;
             using (GraphicsPath path = GetRoundedRect(rect, radius))
             {
                 // Neon glass background
                 using (LinearGradientBrush glass = new LinearGradientBrush(rect,
-                    Color.FromArgb(40, AccentColor),
-                    Color.FromArgb(10, 255, 255, 255), 45f))
+                    Color.FromArgb(48, AccentColor),
+                    Color.FromArgb(12, 255, 255, 255), 45f))
                 {
                     g.FillPath(glass, path);
                 }
@@ -70,17 +72,17 @@ namespace CodeConnect.Forms
                 }
 
                 // Border
-                using (Pen border = new Pen(Color.FromArgb(80 + (int)(_hoverAlpha * 100), AccentColor), 2))
+                using (Pen border = new Pen(Color.FromArgb(90 + (int)(_hoverAlpha * 80), AccentColor), 1.8f))
                     g.DrawPath(border, path);
 
                 // Text
-                using (Font f = new Font("Segoe UI", 12, FontStyle.Bold))
+                using (Font f = new Font("Segoe UI", 11, FontStyle.Bold))
                 {
                     SizeF size = g.MeasureString(this.Text, f);
                     PointF pos = new PointF((this.Width - size.Width) / 2, (this.Height - size.Height) / 2);
                     g.DrawString(this.Text, f, Brushes.White, pos);
                     if (_hoverAlpha > 0)
-                        using (SolidBrush accent = new SolidBrush(Color.FromArgb((int)(_hoverAlpha * 255), AccentColor)))
+                        using (SolidBrush accent = new SolidBrush(Color.FromArgb((int)(_hoverAlpha * 200), AccentColor)))
                             g.DrawString(this.Text, f, accent, pos);
                 }
             }
@@ -127,6 +129,15 @@ namespace CodeConnect.Forms
         private MainMenuView _menuView = null!;
         private TutorialView _tutorialView = null!;
 
+        // New HUD controls
+        private GlassButton _btnUndo = null!;
+        private GlassButton _btnRedo = null!;
+        private GlassButton _btnHint = null!;
+        private GlassButton _btnSave = null!;
+        private GlassButton _btnLoad = null!;
+        private Label _lblScore = null!;
+        private Label _lblHintToast = null!;
+
         private System.Windows.Forms.Timer _gameAnimTimer;
         private float _pulsePhase = 0f;
 
@@ -150,12 +161,14 @@ namespace CodeConnect.Forms
             };
             _gameAnimTimer.Start();
 
+            // Game panel
             _gamePanel = new DoubleBufferedPanel { Dock = DockStyle.Fill, Visible = false, BackColor = Color.Transparent };
             _gamePanel.Paint += GamePanel_Paint;
             _gamePanel.MouseDown += GamePanel_MouseDown;
             _gamePanel.Resize += (s, e) => _gamePanel.Invalidate();
             this.Controls.Add(_gamePanel);
 
+            // Menu and tutorial views
             _menuView = new MainMenuView();
             _menuView.StartClicked += (s, e) => StartGame();
             _menuView.TutorialClicked += (s, e) => ShowTutorial();
@@ -166,64 +179,214 @@ namespace CodeConnect.Forms
             _tutorialView.CloseClicked += (s, e) => ShowMenu();
             this.Controls.Add(_tutorialView);
 
-            DoubleBufferedPanel topPanel = new DoubleBufferedPanel
+            // Top HUD: TableLayoutPanel with 3 columns (left: status, center: score/hint, right: controls)
+            var topPanel = new TableLayoutPanel
             {
-                Height = 80,
-                Dock = DockStyle.Top,
-                BackColor = Color.Transparent,
                 Name = "topPanel",
-                Visible = false,
-                Padding = new Padding(20, 15, 20, 15)
+                Dock = DockStyle.Top,
+                Height = 92,
+                BackColor = Color.Transparent,
+                Padding = new Padding(12),
+                ColumnCount = 3,
+                RowCount = 1,
+                Visible = false
             };
-            topPanel.Paint += (s, e) => {
-                Graphics g = e.Graphics;
-                g.SmoothingMode = SmoothingMode.AntiAlias;
-                RectangleF rect = new RectangleF(0, 0, topPanel.Width, topPanel.Height);
-                using (LinearGradientBrush glass = new LinearGradientBrush(rect,
-                    Color.FromArgb(30, 255, 255, 255),
-                    Color.FromArgb(10, 255, 255, 255), 90f))
-                {
-                    g.FillRectangle(glass, rect);
-                }
-                using (Pen border = new Pen(Color.FromArgb(80, 255, 255, 255), 1))
-                    g.DrawLine(border, 0, topPanel.Height - 1, topPanel.Width, topPanel.Height - 1);
-            };
+            topPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));      // status
+            topPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f)); // center (score + hint)
+            topPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));      // controls
 
+            // Status label (left)
             _lblStatus = new Label
             {
                 ForeColor = Color.White,
                 Font = new Font("Segoe UI", 16, FontStyle.Bold),
-                Dock = DockStyle.Left,
                 AutoSize = true,
-                Padding = new Padding(10, 10, 10, 10),
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(6, 8, 6, 8),
                 BackColor = Color.Transparent
             };
-            topPanel.Controls.Add(_lblStatus);
+            topPanel.Controls.Add(_lblStatus, 0, 0);
 
-            Panel nextWrapper = new Panel { Dock = DockStyle.Right, Width = 170, BackColor = Color.Transparent, Padding = new Padding(10, 0, 0, 0) };
-            _btnNext = new GlassButton
+            // Center panel: score (top) and hint toast (below)
+            var centerPanel = new TableLayoutPanel
             {
-                Text = "NEXT LEVEL",
                 Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 2,
+                BackColor = Color.Transparent
+            };
+            centerPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            centerPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+            _lblScore = new Label
+            {
+                ForeColor = Color.Lime,
+                // Replace this line (incorrect Font constructor and invalid FontStyle):
+                // Font = new Font("Segoe UI", 12, FontStyle.SemiBold),
+
+                // With this corrected line (use FontFamily constructor and FontStyle.Bold as closest available):
+                Font = new Font(new FontFamily("Segoe UI"), 12, FontStyle.Bold),
+                AutoSize = true,
+                Dock = DockStyle.Fill,
+                Text = "Score: 0",
+                Padding = new Padding(6, 6, 6, 6),
+                BackColor = Color.Transparent
+            };
+            centerPanel.Controls.Add(_lblScore, 0, 0);
+
+            _lblHintToast = new Label
+            {
+                ForeColor = Color.White,
+                BackColor = Color.FromArgb(220, 20, 20, 30),
+                AutoSize = false,
+                Height = 36,
+                Dock = DockStyle.Top,
+                TextAlign = ContentAlignment.MiddleCenter,
                 Visible = false,
-                AccentColor = Color.LimeGreen
+                Font = new Font("Segoe UI", 10, FontStyle.Regular),
+                Padding = new Padding(8)
             };
-            _btnNext.Click += (s, e) => LoadLevel(++_currentLevel);
-            nextWrapper.Controls.Add(_btnNext);
-            topPanel.Controls.Add(nextWrapper);
+            // centerPanel will center the toast horizontally
+            var toastWrapper = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent };
+            toastWrapper.Controls.Add(_lblHintToast);
+            _lblHintToast.Anchor = AnchorStyles.Top;
+            _lblHintToast.Left = (toastWrapper.Width - _lblHintToast.Width) / 2;
+            centerPanel.Controls.Add(toastWrapper, 0, 1);
 
-            Panel menuWrapper = new Panel { Dock = DockStyle.Right, Width = 130, BackColor = Color.Transparent, Padding = new Padding(10, 0, 0, 0) };
-            _btnMenu = new GlassButton
+            topPanel.Controls.Add(centerPanel, 1, 0);
+
+            // Right-side controls: FlowLayoutPanel (left-to-right)
+            var rightButtons = new FlowLayoutPanel
             {
-                Text = "MENU",
-                Dock = DockStyle.Fill,
-                AccentColor = Color.DodgerBlue
+                Dock = DockStyle.Right,
+                FlowDirection = FlowDirection.LeftToRight,
+                AutoSize = true,
+                WrapContents = false,
+                BackColor = Color.Transparent,
+                Padding = new Padding(6),
+                Margin = new Padding(0)
             };
-            _btnMenu.Click += (s, e) => ShowMenu();
-            menuWrapper.Controls.Add(_btnMenu);
-            topPanel.Controls.Add(menuWrapper);
 
+            // Buttons
+            _btnUndo = new GlassButton { Text = "UNDO", Width = 86, Height = 40, AccentColor = Color.Orange, Margin = new Padding(6, 6, 6, 6) };
+            _btnUndo.Click += (s, e) => { if (BackendConnector.UndoLastMove()) RefreshAfterAction(); };
+
+            _btnRedo = new GlassButton { Text = "REDO", Width = 86, Height = 40, AccentColor = Color.Orange, Margin = new Padding(6, 6, 6, 6) };
+            _btnRedo.Click += (s, e) => { if (BackendConnector.RedoLastMove()) RefreshAfterAction(); };
+
+            _btnHint = new GlassButton { Text = "HINT", Width = 86, Height = 40, AccentColor = Color.Cyan, Margin = new Padding(6, 6, 6, 6) };
+            _btnHint.Click += (s, e) => ShowHint();
+
+            _btnSave = new GlassButton { Text = "SAVE", Width = 86, Height = 40, AccentColor = Color.MediumSpringGreen, Margin = new Padding(6, 6, 6, 6) };
+            _btnSave.Click += (s, e) => SaveProgressToFile();
+
+            _btnLoad = new GlassButton { Text = "LOAD", Width = 86, Height = 40, AccentColor = Color.MediumSpringGreen, Margin = new Padding(6, 6, 6, 6) };
+            _btnLoad.Click += (s, e) => LoadProgressFromFile();
+
+            _btnMenu = new GlassButton { Text = "MENU", Width = 100, Height = 40, AccentColor = Color.DodgerBlue, Margin = new Padding(6, 6, 6, 6) };
+            _btnMenu.Click += (s, e) => ShowMenu();
+
+            _btnNext = new GlassButton { Text = "NEXT LEVEL", Width = 120, Height = 40, AccentColor = Color.LimeGreen, Margin = new Padding(6, 6, 6, 6), Visible = false };
+            _btnNext.Click += (s, e) => LoadLevel(++_currentLevel);
+
+            // Add in natural left-to-right order
+            rightButtons.Controls.Add(_btnUndo);
+            rightButtons.Controls.Add(_btnRedo);
+            rightButtons.Controls.Add(_btnHint);
+            rightButtons.Controls.Add(_btnSave);
+            rightButtons.Controls.Add(_btnLoad);
+            rightButtons.Controls.Add(_btnMenu);
+            rightButtons.Controls.Add(_btnNext);
+
+            topPanel.Controls.Add(rightButtons, 2, 0);
+
+            // Add topPanel to form
             this.Controls.Add(topPanel);
+
+            // Improve HUD painting: stronger gradient for readability
+            topPanel.Paint += (s, e) =>
+            {
+                var g = e.Graphics;
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                Rectangle r = topPanel.ClientRectangle;
+                using (LinearGradientBrush bg = new LinearGradientBrush(r, Color.FromArgb(40, 20, 20, 30), Color.FromArgb(18, 12, 24), 90f))
+                {
+                    g.FillRectangle(bg, r);
+                }
+                using (Pen border = new Pen(Color.FromArgb(120, 255, 255, 255), 1))
+                    g.DrawLine(border, 0, topPanel.Height - 1, topPanel.Width, topPanel.Height - 1);
+            };
+        }
+
+        private void RefreshAfterAction()
+        {
+            _gamePanel.Invalidate();
+            UpdateScoreDisplay();
+            if (BackendConnector.IsLevelComplete() == 1) _btnNext.Visible = true;
+        }
+
+        private void ShowHint()
+        {
+            string hint = BackendConnector.GetHint();
+            _lblHintToast.Text = hint;
+            _lblHintToast.Visible = true;
+            var t = new System.Windows.Forms.Timer { Interval = 3000 };
+            t.Tick += (s, e) => { _lblHintToast.Visible = false; t.Stop(); t.Dispose(); };
+            t.Start();
+        }
+
+        private void SaveProgressToFile()
+        {
+            try
+            {
+                string json = BackendConnector.SaveProgress();
+                using (SaveFileDialog dlg = new SaveFileDialog())
+                {
+                    dlg.Filter = "CodeConnect Save|*.ccsave|JSON|*.json";
+                    dlg.FileName = $"level{_currentLevel}_save.json";
+                    if (dlg.ShowDialog() == DialogResult.OK)
+                    {
+                        File.WriteAllText(dlg.FileName, json, Encoding.UTF8);
+                        ShowTransientMessage("Progress saved.");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Save failed: {ex.Message}");
+            }
+        }
+
+        private void LoadProgressFromFile()
+        {
+            try
+            {
+                using (OpenFileDialog dlg = new OpenFileDialog())
+                {
+                    dlg.Filter = "CodeConnect Save|*.ccsave;*.json|All Files|*.*";
+                    if (dlg.ShowDialog() == DialogResult.OK)
+                    {
+                        string json = File.ReadAllText(dlg.FileName, Encoding.UTF8);
+                        BackendConnector.LoadProgress(json);
+                        RefreshAfterAction();
+                        ShowTransientMessage("Progress loaded.");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Load failed: {ex.Message}");
+            }
+        }
+
+        private void ShowTransientMessage(string text)
+        {
+            _lblHintToast.Text = text;
+            _lblHintToast.Visible = true;
+            var t = new System.Windows.Forms.Timer { Interval = 1800 };
+            t.Tick += (s, e) => { _lblHintToast.Visible = false; t.Stop(); t.Dispose(); };
+            t.Start();
         }
 
         protected override void OnPaintBackground(PaintEventArgs e)
@@ -274,7 +437,13 @@ namespace CodeConnect.Forms
         }
 
         private void ShowMenu() => SwitchView(_menuView);
-        private void StartGame() { SwitchView(_gamePanel); this.Controls["topPanel"].Visible = true; LoadLevel(1); }
+        private void StartGame()
+        {
+            SwitchView(_gamePanel);
+            var top = this.Controls["topPanel"];
+            if (top != null) top.Visible = true;
+            LoadLevel(1);
+        }
         private void ShowTutorial() => SwitchView(_tutorialView);
 
         private void SwitchView(Control view)
@@ -282,17 +451,21 @@ namespace CodeConnect.Forms
             _menuView.Visible = (view == _menuView);
             _gamePanel.Visible = (view == _gamePanel);
             _tutorialView.Visible = (view == _tutorialView);
-            if (view != _gamePanel) this.Controls["topPanel"].Visible = false;
+            var top = this.Controls["topPanel"];
+            if (top != null) top.Visible = (view == _gamePanel);
         }
 
         private void LoadLevel(int level)
         {
             if (level > 20) { MessageBox.Show("Master Coder!"); ShowMenu(); return; }
             _currentLevel = level;
-            BackendConnector.GenerateLevel(level);
+
+            BackendConnector.StartLevel(level);
+
             _lblStatus.Text = $"LEVEL {level} - CONNECT THE LOGIC";
             _btnNext.Visible = false;
             _activeFlowId = 1;
+            UpdateScoreDisplay();
             _gamePanel.Invalidate();
         }
 
@@ -316,11 +489,26 @@ namespace CodeConnect.Forms
                 }
                 else
                 {
-                    BackendConnector.TogglePath(x, y, _activeFlowId);
+                    BackendConnector.PlacePath(x, y, _activeFlowId);
                 }
 
                 if (BackendConnector.IsLevelComplete() == 1) _btnNext.Visible = true;
+                UpdateScoreDisplay();
                 _gamePanel.Invalidate();
+            }
+        }
+
+        private void UpdateScoreDisplay()
+        {
+            try
+            {
+                int score = BackendConnector.GetScore();
+                _lblScore.Text = $"Score: {score}";
+                _lblScore.Refresh();
+            }
+            catch
+            {
+                _lblScore.Text = "Score: -";
             }
         }
 
@@ -337,15 +525,22 @@ namespace CodeConnect.Forms
             using (SolidBrush gridGlass = new SolidBrush(Color.FromArgb(12, 255, 255, 255)))
                 g.FillRectangle(gridGlass, gridRect);
 
-            // Dotted Grid Points for premium look
+            // Dotted Grid Points aligned to cell centers
             using (SolidBrush dotBrush = new SolidBrush(Color.FromArgb(36, 255, 255, 255)))
             {
-                for (int x = 0; x <= GridWidth; x++)
-                    for (int y = 0; y <= GridHeight; y++)
-                        g.FillEllipse(dotBrush, x * cellW - 2, y * cellH - 2, 4, 4);
+                float dotSize = Math.Max(2f, Math.Min(cellW, cellH) * 0.06f);
+                for (int gx = 0; gx < GridWidth; gx++)
+                {
+                    for (int gy = 0; gy < GridHeight; gy++)
+                    {
+                        float cx = gx * cellW + cellW / 2f;
+                        float cy = gy * cellH + cellH / 2f;
+                        g.FillEllipse(dotBrush, cx - dotSize / 2f, cy - dotSize / 2f, dotSize, dotSize);
+                    }
+                }
             }
 
-            // Draw Pipes and Nodes
+            // Draw Pipes and Nodes (preserve original visuals)
             for (int y = 0; y < GridHeight; y++)
             {
                 for (int x = 0; x < GridWidth; x++)
@@ -409,7 +604,7 @@ namespace CodeConnect.Forms
                                 cellRect.Y + (cellH - pulseRadius) / 2,
                                 pulseRadius, pulseRadius);
 
-                            using (Pen pulsePen = new Pen(Color.FromArgb(160, color), 2.5f))
+                            using (Pen pulsePen = new Pen(Color.FromArgb(160, color), 2.0f))
                                 g.DrawEllipse(pulsePen, pulseRect);
                         }
 
@@ -440,69 +635,66 @@ namespace CodeConnect.Forms
                         BackendConnector.GetNodeText(x, y, sb);
                         string text = sb.ToString();
 
-                        using (Font f = new Font("Segoe UI", 10, FontStyle.Bold))
+                        using (Font f = new Font("Segoe UI", Math.Max(8, (int)(nodeSize * 0.18)), FontStyle.Bold))
                         {
                             SizeF size = g.MeasureString(text, f);
                             PointF pos = new PointF(nodeRect.X + (nodeSize - size.Width) / 2, nodeRect.Y + (nodeSize - size.Height) / 2);
 
-                            // Text shadow
-                            g.DrawString(text, f, new SolidBrush(Color.FromArgb(160, 0, 0, 0)), pos.X, pos.Y + 1);
+                            // Subtle text shadow
+                            g.DrawString(text, f, new SolidBrush(Color.FromArgb(120, 0, 0, 0)), pos.X, pos.Y + 1);
                             g.DrawString(text, f, Brushes.White, pos);
                         }
                     }
                 }
             }
 
-            // HUD overlay: small legend and active flow indicator
+            // HUD overlay: small legend and active flow indicator (keeps drawing but smaller)
             DrawHudOverlay(g);
         }
 
         private void DrawHudOverlay(Graphics g)
         {
             int padding = 12;
-            int boxW = 220;
-            int boxH = 64;
+            int boxW = 260;
+            int boxH = 72;
             RectangleF hudRect = new RectangleF(_gamePanel.Width - boxW - padding, padding, boxW, boxH);
 
             using (GraphicsPath path = new GraphicsPath())
             {
-                path.AddRoundedRectangle(hudRect, 10);
-                using (LinearGradientBrush bg = new LinearGradientBrush(hudRect, Color.FromArgb(30, 255, 255, 255), Color.FromArgb(8, 255, 255, 255), 90f))
+                path.AddRoundedRectangle(hudRect, 12);
+                using (LinearGradientBrush bg = new LinearGradientBrush(hudRect, Color.FromArgb(40, 255, 255, 255), Color.FromArgb(12, 255, 255, 255), 90f))
                     g.FillPath(bg, path);
 
-                using (Pen border = new Pen(Color.FromArgb(80, 255, 255, 255), 1))
+                using (Pen border = new Pen(Color.FromArgb(120, 255, 255, 255), 1))
                     g.DrawPath(border, path);
             }
 
-            // Active flow color swatch
+            // Active flow color swatch (larger)
             Color activeColor = (_activeFlowId > 0 && _activeFlowId < _flowColors.Length) ? _flowColors[_activeFlowId] : Color.Gray;
-            RectangleF swatch = new RectangleF(hudRect.X + 12, hudRect.Y + 12, 40, 40);
+            RectangleF swatch = new RectangleF(hudRect.X + 12, hudRect.Y + 12, 56, 56);
             using (SolidBrush sw = new SolidBrush(activeColor))
                 g.FillEllipse(sw, swatch);
 
-            using (Pen glow = new Pen(Color.FromArgb(120, activeColor), 3))
+            using (Pen glow = new Pen(Color.FromArgb(160, activeColor), 3))
                 g.DrawEllipse(glow, swatch.X - 2, swatch.Y - 2, swatch.Width + 4, swatch.Height + 4);
 
             // Text
             using (Font f = new Font("Segoe UI", 10, FontStyle.Bold))
             {
-                g.DrawString("Active Flow", f, Brushes.White, hudRect.X + 64, hudRect.Y + 14);
-                g.DrawString($"ID: {_activeFlowId}", f, Brushes.LightGray, hudRect.X + 64, hudRect.Y + 34);
+                g.DrawString("Active Flow", f, Brushes.White, hudRect.X + 80, hudRect.Y + 14);
+                g.DrawString($"ID: {_activeFlowId}", f, Brushes.LightGray, hudRect.X + 80, hudRect.Y + 34);
             }
-        }
-    }
 
-    // Extension helper for rounded rectangle path (keeps presentation code tidy)
-    internal static class GraphicsPathExtensions
-    {
-        public static void AddRoundedRectangle(this GraphicsPath path, RectangleF rect, float radius)
-        {
-            float d = radius * 2f;
-            path.AddArc(rect.X, rect.Y, d, d, 180, 90);
-            path.AddArc(rect.Right - d, rect.Y, d, d, 270, 90);
-            path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
-            path.AddArc(rect.X, rect.Bottom - d, d, d, 90, 90);
-            path.CloseFigure();
+            // Score breakdown (small, below HUD)
+            try
+            {
+                string details = BackendConnector.GetScoreDetails();
+                using (Font f2 = new Font("Segoe UI", 9, FontStyle.Regular))
+                {
+                    g.DrawString(details, f2, new SolidBrush(Color.FromArgb(220, 220, 220, 220)), hudRect.X + 12, hudRect.Y + hudRect.Height + 6);
+                }
+            }
+            catch { /* ignore if not available */ }
         }
     }
 }
